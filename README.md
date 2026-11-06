@@ -1,2 +1,2 @@
-# DASH4D-omics-effect
-The codes for data processing, analysis and visualization for the DASH4D omics effect paper
+# DASH4D-microbiome
+The codes for data analysis and visualization for DASH4D microbiome effect paper
