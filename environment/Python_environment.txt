@@ -1,0 +1,3 @@
+Python version: 3.10.18
+Operating system: Darwin
+Architecture: arm64
