@@ -378,8 +378,8 @@ MICROBIOME_ALPHA_DIVERSITY_LAB_DASH = &quot;../data/alpha_diversity_lab_ana_data
 alpha_diversity_diet_DASH &lt;- read.table(MICROBIOME_ALPHA_DIVERSITY_LAB_DASH, header=T, sep=&quot;\t&quot;) %&gt;%
   mutate(diet = factor(diet, levels=c(&quot;baseline&quot;, &quot;CH&quot;,&quot;CL&quot;,&quot;DH&quot;,&quot;DL&quot;)),
          visit = factor(visit, levels=c(&quot;PRI&quot;, &quot;FP1&quot;, &quot;FP2&quot;, &quot;FP3&quot;, &quot;FP4&quot;)),
-         DASH = factor(DASH, c(&quot;baseline&quot;,&quot;DASH diet&quot;,&quot;Comparison diet&quot;)),
-         sodium = factor(sodium, c(&quot;baseline&quot;,&quot;low sodium&quot;,&quot;high sodium&quot;))) %&gt;%
+         DASH = factor(DASH, c(&quot;baseline&quot;,&quot;Comparison diet&quot;,&quot;DASH diet&quot;)),
+         sodium = factor(sodium, c(&quot;baseline&quot;,&quot;high sodium&quot;,&quot;low sodium&quot;))) %&gt;%
   arrange(pptid, visit)</code></pre>
 </div>
 <div id="change-of-metrics-from-baseline" class="section level4">
@@ -853,8 +853,8 @@ write.table(ind_covariates_aitchison_comp_df,
             row.names=T,
             quote=F)</code></pre>
 </div>
-<div id="pca-on-clr-transformed-change-from-baseline" class="section level4">
-<h4>PCA on CLR-transformed change from baseline</h4>
+<div id="pca-on-clr-transformed-data" class="section level4">
+<h4>PCA on CLR-transformed data</h4>
 <pre class="r"><code>set.seed(890122)
 
 
@@ -889,92 +889,14 @@ species_filtered_clean_included_impute_clr &lt;-
             method=&quot;clr&quot;,
             pseudocount=0)[metadata_withbaseline$sample_id,]
 
-dist_mat_ratchison &lt;- 
-  dist(species_filtered_clean_included_impute_clr)
-
-### Convert distance matrix to pairwise data
-dist_mat_ratchison_pair &lt;-
-  melt(as.matrix(dist_mat_ratchison))[melt(upper.tri(as.matrix(dist_mat_ratchison)))$value,]%&gt;%
-  filter(Var1 != Var2)
-
-dist_mat_ratchison_pair_meta &lt;-
-  merge(
-    merge(dist_mat_ratchison_pair,
-          metadata_withbaseline %&gt;% 
-            dplyr::select(sample_id, pptid, diet, visit,DASH,sodium),
-          by.x=&quot;Var1&quot;, by.y=&quot;sample_id&quot;, all.x=T),
-    metadata_withbaseline %&gt;% 
-            dplyr::select(sample_id, pptid, diet, visit,DASH,sodium),
-    by.x=&quot;Var2&quot;, by.y=&quot;sample_id&quot;, all.x=T)
-
-### Within individual vs diet
-ind_diet_ratchison_comp &lt;-
-  dist_mat_ratchison_pair_meta %&gt;%
-  mutate(group = factor(case_when(pptid.x == pptid.y ~ 0,
-                                  diet.x == diet.y ~ 1),
-                        labels=c(&quot;Within-individual&quot;, &quot;Within-diet&quot;))
-         ) %&gt;% filter(!is.na(group))
-
-dist_baseline_ratchison &lt;-
-  dist_mat_ratchison_pair_meta %&gt;% filter(pptid.x == pptid.y &amp; visit.x == &quot;PRI&quot;)
-
-rownames(metadata_withbaseline) &lt;-
-  metadata_withbaseline$sample_id
+## run PCA on clr transformed values
+pca_clr &lt;- prcomp(
+    species_filtered_clean_included_impute_clr,
+    center = TRUE,
+    scale. = FALSE
+)
 
 
-### CLR value change from baseline
-make_displacements &lt;- function(Z, meta,
-                               subject   = &quot;subject&quot;,
-                               treatment = &quot;diet&quot;,
-                               visit     = &quot;visit&quot;,
-                               baseline  = &quot;PRI&quot;) {
-
-  stopifnot(identical(rownames(Z), rownames(meta)))
-  stopifnot(all(c(subject, visit) %in% colnames(meta)))
-  stopifnot(all(is.finite(Z)))
-
-  subj &lt;- as.character(meta[[subject]])
-  trt &lt;- as.character(meta[[treatment]])
-  vis  &lt;- as.character(meta[[visit]])
-  stopifnot(baseline %in% vis)
-
-  # baseline row index per subject; NA if absent
-  base_idx &lt;- match(subj, subj[vis == baseline])
-  base_row &lt;- which(vis == baseline)[base_idx]
-
-  keep &lt;- vis != baseline &amp; !is.na(base_row)
-
-  V &lt;- Z[keep, , drop = FALSE] - Z[base_row[keep], , drop = FALSE]
-
-  key &lt;- data.frame(
-    sample_id = rownames(Z)[keep],
-    subject   = subj[keep],
-    visit     = vis[keep],
-    diet = trt[keep],
-    base_id   = rownames(Z)[base_row[keep]],
-    norm      = sqrt(rowSums(V^2)),
-    stringsAsFactors = FALSE
-  )
-  rownames(V) &lt;- key$sample_id
-
-  # report what was dropped
-  lost &lt;- setdiff(unique(subj), unique(subj[vis == baseline]))
-  if (length(lost))
-    warning(sprintf(&quot;%d subject(s) lacking a %s sample dropped: %s&quot;,
-                    length(lost), baseline, paste(lost, collapse = &quot;, &quot;)))
-
-  list(V = V, key = key)
-}
-
-
-out &lt;- make_displacements(as.matrix(species_filtered_clean_included_impute_clr),
-                          metadata_withbaseline,
-                          subject = &quot;pptid&quot;)
-
-out_mat &lt;- out$V
-
-
-### Align pc signs
 align_pc_sign &lt;- function(pca, X) {
   # drop zero-variance columns: scale() would return NaN
   X &lt;- X[, apply(X, 2, sd, na.rm = TRUE) &gt; 0, drop = FALSE]
@@ -996,228 +918,260 @@ align_pc_sign &lt;- function(pca, X) {
   pca
 }
 
-pc &lt;- prcomp(out_mat %&gt;% t())
 
-pc &lt;- align_pc_sign(pc, out_mat %&gt;% t())  
+pca_clr &lt;- align_pc_sign(pca_clr, species_filtered_clean_included_impute_clr) 
+
+pca_meta &lt;- alpha_diversity_diet_DASH
+
+rownames(pca_meta) &lt;- 
+  paste(alpha_diversity_diet_DASH$pptid,
+        alpha_diversity_diet_DASH$visit,
+        &quot;Micro.Fe1&quot;, sep=&quot;.&quot;)
+
+pca_clr_meta &lt;- merge(pca_meta,
+                      pca_clr$x[,1:3],by=0)
 
 
-pc1 &lt;- pc$rotation[,1]
-pc2 &lt;- pc$rotation[,2]
-pc3 &lt;- pc$rotation[,3]
+((pca_clr$sdev)^2/sum((pca_clr$sdev)^2))[1:3]</code></pre>
+<pre><code>## [1] 0.14196476 0.08567808 0.06461345</code></pre>
+<pre class="r"><code>pca_clr_meta_baseline &lt;- 
+  pca_clr_meta %&gt;% filter(diet == &quot;baseline&quot;) %&gt;%
+  dplyr::select(c(pptid,PC1:PC3)) %&gt;%
+  melt(id.vars=c(&quot;pptid&quot;),
+       variable.name=&quot;metrics&quot;,
+       value.name=&quot;baseline&quot;) 
 
-clr_pca_data &lt;- (out$key) %&gt;%
-  mutate(DASH = factor(ifelse(diet %in% c(&#39;DL&#39;,&#39;DH&#39;), 1,0), labels=c(&quot;Comparison diet&quot;, &quot;DASH4D diet&quot;)),
-         sodium = factor(ifelse(diet %in% c(&#39;DL&#39;,&#39;CL&#39;), 1,0), labels=c(&quot;high sodium&quot;, &quot;low sodium&quot;)))
+## end-of-diet-period CTF data with baseline
+### transform to long
+pca_clr_meta_withbaseline &lt;- pca_clr_meta %&gt;% 
+  filter(pptid %in% pca_clr_meta_baseline$pptid) %&gt;% 
+  filter(diet != &quot;baseline&quot;) %&gt;%
+  dplyr::select(c(pptid,visit,diet,DASH,sodium,
+                  PC1:PC3)) %&gt;%
+  melt(id.vars=c(&quot;pptid&quot;,&quot;visit&quot;,&quot;diet&quot;,&quot;DASH&quot;,&quot;sodium&quot;),
+       variable.name=&quot;metrics&quot;,
+       value.name=&quot;measurements&quot;)
 
-((pc$sdev)^2/sum((pc$sdev)^2))[1:3]</code></pre>
-<pre><code>## [1] 0.15546384 0.09721036 0.06632310</code></pre>
-<pre class="r"><code>summary(lmer(pc1 ~ visit +DASH+ (1|subject), data=clr_pca_data))</code></pre>
+## merge baseline with end-of-diet-period data
+## calculate change from baseline
+pca_clr_meta_changebaseline &lt;- 
+  merge(pca_clr_meta_withbaseline,
+        pca_clr_meta_baseline,
+        by=c(&quot;pptid&quot;,&quot;metrics&quot;), all.x=T) %&gt;%
+  mutate(changefrombaseline = measurements-baseline) %&gt;%
+  dcast(pptid+visit+diet+DASH +sodium ~ metrics,
+        value.var=&quot;changefrombaseline&quot;)
+
+
+
+summary(lmer(PC1 ~ visit +DASH+ (1|pptid), data=pca_clr_meta_changebaseline))</code></pre>
 <pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
 ## lmerModLmerTest]
-## Formula: pc1 ~ visit + DASH + (1 | subject)
-##    Data: clr_pca_data
+## Formula: PC1 ~ visit + DASH + (1 | pptid)
+##    Data: pca_clr_meta_changebaseline
 ## 
-## REML criterion at convergence: -1308.2
+## REML criterion at convergence: 1730.1
 ## 
 ## Scaled residuals: 
 ##     Min      1Q  Median      3Q     Max 
-## -2.8295 -0.5927 -0.0361  0.5405  4.0146 
-## 
-## Random effects:
-##  Groups   Name        Variance  Std.Dev.
-##  subject  (Intercept) 0.0022868 0.04782 
-##  Residual             0.0005386 0.02321 
-## Number of obs: 344, groups:  subject, 94
-## 
-## Fixed effects:
-##                   Estimate Std. Error         df t value Pr(&gt;|t|)    
-## (Intercept)     -3.683e-03  5.659e-03  1.392e+02  -0.651 0.516283    
-## visitFP2         7.515e-04  3.462e-03  2.472e+02   0.217 0.828324    
-## visitFP3         2.327e-03  3.597e-03  2.485e+02   0.647 0.518246    
-## visitFP4         3.726e-03  3.648e-03  2.486e+02   1.021 0.308148    
-## DASHDASH4D diet  9.108e-03  2.538e-03  2.480e+02   3.588 0.000401 ***
-## ---
-## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
-## 
-## Correlation of Fixed Effects:
-##             (Intr) vstFP2 vstFP3 vstFP4
-## visitFP2    -0.306                     
-## visitFP3    -0.308  0.488              
-## visitFP4    -0.294  0.482  0.484       
-## DASHDASH4Dd -0.225 -0.017  0.040  0.001</code></pre>
-<pre class="r"><code>summary(lmer(pc2 ~ visit +DASH+ (1|subject), data=clr_pca_data))</code></pre>
-<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
-## lmerModLmerTest]
-## Formula: pc2 ~ visit + DASH + (1 | subject)
-##    Data: clr_pca_data
-## 
-## REML criterion at convergence: -1211.9
-## 
-## Scaled residuals: 
-##      Min       1Q   Median       3Q      Max 
-## -3.01497 -0.51342  0.01526  0.50224  2.78447 
-## 
-## Random effects:
-##  Groups   Name        Variance  Std.Dev.
-##  subject  (Intercept) 0.0018838 0.04340 
-##  Residual             0.0008396 0.02898 
-## Number of obs: 344, groups:  subject, 94
-## 
-## Fixed effects:
-##                   Estimate Std. Error         df t value Pr(&gt;|t|)    
-## (Intercept)       0.004553   0.005659 174.947422   0.805    0.422    
-## visitFP2         -0.003638   0.004320 247.045297  -0.842    0.401    
-## visitFP3          0.002695   0.004485 249.232713   0.601    0.548    
-## visitFP4         -0.001809   0.004548 249.367819  -0.398    0.691    
-## DASHDASH4D diet   0.016431   0.003166 248.332013   5.190 4.37e-07 ***
-## ---
-## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
-## 
-## Correlation of Fixed Effects:
-##             (Intr) vstFP2 vstFP3 vstFP4
-## visitFP2    -0.382                     
-## visitFP3    -0.385  0.488              
-## visitFP4    -0.367  0.482  0.483       
-## DASHDASH4Dd -0.281 -0.017  0.039  0.001</code></pre>
-<pre class="r"><code>summary(lmer(pc3 ~ visit +DASH+ (1|subject), data=clr_pca_data))</code></pre>
-<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
-## lmerModLmerTest]
-## Formula: pc3 ~ visit + DASH + (1 | subject)
-##    Data: clr_pca_data
-## 
-## REML criterion at convergence: -1172.3
-## 
-## Scaled residuals: 
-##      Min       1Q   Median       3Q      Max 
-## -2.70352 -0.49333  0.03974  0.55792  2.56152 
+## -3.5739 -0.5542  0.0234  0.5035  2.5923 
 ## 
 ## Random effects:
 ##  Groups   Name        Variance Std.Dev.
-##  subject  (Intercept) 0.001962 0.04429 
-##  Residual             0.000967 0.03110 
-## Number of obs: 344, groups:  subject, 94
+##  pptid    (Intercept) 13.105   3.620   
+##  Residual              4.669   2.161   
+## Number of obs: 344, groups:  pptid, 94
 ## 
 ## Fixed effects:
-##                   Estimate Std. Error         df t value Pr(&gt;|t|)
-## (Intercept)      6.782e-03  5.888e-03  1.820e+02   1.152    0.251
-## visitFP2        -3.486e-04  4.636e-03  2.468e+02  -0.075    0.940
-## visitFP3         2.855e-05  4.812e-03  2.492e+02   0.006    0.995
-## visitFP4        -6.313e-03  4.880e-03  2.493e+02  -1.294    0.197
-## DASHDASH4D diet -2.139e-03  3.397e-03  2.482e+02  -0.630    0.529
-## 
-## Correlation of Fixed Effects:
-##             (Intr) vstFP2 vstFP3 vstFP4
-## visitFP2    -0.394                     
-## visitFP3    -0.397  0.488              
-## visitFP4    -0.379  0.482  0.483       
-## DASHDASH4Dd -0.290 -0.017  0.039  0.001</code></pre>
-<pre class="r"><code>summary(lmer(pc1 ~ visit +sodium+ (1|subject), data=clr_pca_data))</code></pre>
-<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
-## lmerModLmerTest]
-## Formula: pc1 ~ visit + sodium + (1 | subject)
-##    Data: clr_pca_data
-## 
-## REML criterion at convergence: -1296.9
-## 
-## Scaled residuals: 
-##     Min      1Q  Median      3Q     Max 
-## -2.7176 -0.6053  0.0042  0.6087  3.6597 
-## 
-## Random effects:
-##  Groups   Name        Variance  Std.Dev.
-##  subject  (Intercept) 0.0022721 0.04767 
-##  Residual             0.0005647 0.02376 
-## Number of obs: 344, groups:  subject, 94
-## 
-## Fixed effects:
-##                    Estimate Std. Error         df t value Pr(&gt;|t|)
-## (Intercept)      -4.665e-04  5.663e-03  1.404e+02  -0.082    0.934
-## visitFP2          8.931e-04  3.544e-03  2.473e+02   0.252    0.801
-## visitFP3          1.706e-03  3.681e-03  2.486e+02   0.463    0.643
-## visitFP4          3.704e-03  3.735e-03  2.487e+02   0.992    0.322
-## sodiumlow sodium  2.856e-03  2.610e-03  2.487e+02   1.094    0.275
-## 
-## Correlation of Fixed Effects:
-##             (Intr) vstFP2 vstFP3 vstFP4
-## visitFP2    -0.313                     
-## visitFP3    -0.300  0.489              
-## visitFP4    -0.300  0.482  0.484       
-## sodiumlwsdm -0.219 -0.020 -0.027 -0.003</code></pre>
-<pre class="r"><code>summary(lmer(pc2 ~ visit +sodium+ (1|subject), data=clr_pca_data))</code></pre>
-<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
-## lmerModLmerTest]
-## Formula: pc2 ~ visit + sodium + (1 | subject)
-##    Data: clr_pca_data
-## 
-## REML criterion at convergence: -1186.8
-## 
-## Scaled residuals: 
-##      Min       1Q   Median       3Q      Max 
-## -2.99669 -0.51495  0.01987  0.49374  2.46170 
-## 
-## Random effects:
-##  Groups   Name        Variance  Std.Dev.
-##  subject  (Intercept) 0.0018842 0.04341 
-##  Residual             0.0009258 0.03043 
-## Number of obs: 344, groups:  subject, 94
-## 
-## Fixed effects:
-##                    Estimate Std. Error         df t value Pr(&gt;|t|)  
-## (Intercept)        0.011610   0.005743 179.813916   2.022   0.0447 *
-## visitFP2          -0.003292   0.004536 247.052533  -0.726   0.4687  
-## visitFP3           0.001730   0.004706 249.308403   0.368   0.7135  
-## visitFP4          -0.001806   0.004775 249.540350  -0.378   0.7055  
-## sodiumlow sodium   0.002452   0.003336 249.408378   0.735   0.4630  
+##               Estimate Std. Error       df t value Pr(&gt;|t|)    
+## (Intercept)     0.5020     0.4540 161.4741   1.106   0.2705    
+## visitFP2       -0.3576     0.3222 247.9758  -1.110   0.2681    
+## visitFP3       -0.5936     0.3346 249.8013  -1.774   0.0773 .  
+## visitFP4       -0.5533     0.3394 249.9061  -1.630   0.1043    
+## DASHDASH diet  -1.0646     0.2362 249.0496  -4.508 1.01e-05 ***
 ## ---
 ## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
 ## 
 ## Correlation of Fixed Effects:
 ##             (Intr) vstFP2 vstFP3 vstFP4
-## visitFP2    -0.395                     
-## visitFP3    -0.379  0.490              
-## visitFP4    -0.379  0.482  0.483       
-## sodiumlwsdm -0.276 -0.020 -0.027 -0.003</code></pre>
-<pre class="r"><code>summary(lmer(pc3 ~ visit +sodium+ (1|subject), data=clr_pca_data))</code></pre>
+## visitFP2    -0.355                     
+## visitFP3    -0.358  0.488              
+## visitFP4    -0.341  0.482  0.483       
+## DASHDASHdit -0.261 -0.017  0.039  0.001</code></pre>
+<pre class="r"><code>summary(lmer(PC2 ~ visit +DASH+ (1|pptid), data=pca_clr_meta_changebaseline))</code></pre>
 <pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
 ## lmerModLmerTest]
-## Formula: pc3 ~ visit + sodium + (1 | subject)
-##    Data: clr_pca_data
+## Formula: PC2 ~ visit + DASH + (1 | pptid)
+##    Data: pca_clr_meta_changebaseline
 ## 
-## REML criterion at convergence: -1172.3
+## REML criterion at convergence: 1782.2
 ## 
 ## Scaled residuals: 
-##      Min       1Q   Median       3Q      Max 
-## -2.77361 -0.50308  0.04152  0.56673  2.56506 
+##     Min      1Q  Median      3Q     Max 
+## -4.4499 -0.4967  0.0341  0.4936  2.8774 
 ## 
 ## Random effects:
-##  Groups   Name        Variance  Std.Dev.
-##  subject  (Intercept) 0.0019610 0.04428 
-##  Residual             0.0009671 0.03110 
-## Number of obs: 344, groups:  subject, 94
+##  Groups   Name        Variance Std.Dev.
+##  pptid    (Intercept) 9.294    3.049   
+##  Residual             6.370    2.524   
+## Number of obs: 344, groups:  pptid, 94
 ## 
 ## Fixed effects:
-##                    Estimate Std. Error         df t value Pr(&gt;|t|)
-## (Intercept)       4.666e-03  5.863e-03  1.799e+02   0.796    0.427
-## visitFP2         -4.566e-04  4.636e-03  2.469e+02  -0.098    0.922
-## visitFP3          6.261e-05  4.810e-03  2.491e+02   0.013    0.990
-## visitFP4         -6.321e-03  4.880e-03  2.494e+02  -1.295    0.196
-## sodiumlow sodium  2.195e-03  3.409e-03  2.492e+02   0.644    0.520
+##                Estimate Std. Error        df t value Pr(&gt;|t|)  
+## (Intercept)     0.06707    0.43551 210.34608   0.154    0.878  
+## visitFP2       -0.17736    0.37615 248.01530  -0.472    0.638  
+## visitFP3        0.17513    0.39012 250.96812   0.449    0.654  
+## visitFP4        0.23888    0.39561 251.18201   0.604    0.546  
+## DASHDASH diet   0.69721    0.27549 249.75279   2.531    0.012 *
+## ---
+## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
 ## 
 ## Correlation of Fixed Effects:
 ##             (Intr) vstFP2 vstFP3 vstFP4
-## visitFP2    -0.395                     
-## visitFP3    -0.380  0.490              
-## visitFP4    -0.379  0.482  0.483       
-## sodiumlwsdm -0.276 -0.020 -0.027 -0.003</code></pre>
+## visitFP2    -0.432                     
+## visitFP3    -0.435  0.489              
+## visitFP4    -0.416  0.483  0.482       
+## DASHDASHdit -0.317 -0.017  0.038  0.000</code></pre>
+<pre class="r"><code>summary(lmer(PC3 ~ visit +DASH+ (1|pptid), data=pca_clr_meta_changebaseline))</code></pre>
+<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
+## lmerModLmerTest]
+## Formula: PC3 ~ visit + DASH + (1 | pptid)
+##    Data: pca_clr_meta_changebaseline
+## 
+## REML criterion at convergence: 1832.7
+## 
+## Scaled residuals: 
+##      Min       1Q   Median       3Q      Max 
+## -3.10767 -0.44732 -0.01208  0.43590  2.76334 
+## 
+## Random effects:
+##  Groups   Name        Variance Std.Dev.
+##  pptid    (Intercept) 19.582   4.425   
+##  Residual              6.114   2.473   
+## Number of obs: 344, groups:  pptid, 94
+## 
+## Fixed effects:
+##                Estimate Std. Error        df t value Pr(&gt;|t|)    
+## (Intercept)     0.65649    0.54372 152.73279   1.207   0.2291    
+## visitFP2        0.08832    0.36874 247.05464   0.240   0.8109    
+## visitFP3       -0.18262    0.38304 248.70588  -0.477   0.6340    
+## visitFP4       -0.83171    0.38847 248.79690  -2.141   0.0332 *  
+## DASHDASH diet  -1.32071    0.27032 248.02592  -4.886 1.85e-06 ***
+## ---
+## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
+## 
+## Correlation of Fixed Effects:
+##             (Intr) vstFP2 vstFP3 vstFP4
+## visitFP2    -0.340                     
+## visitFP3    -0.342  0.488              
+## visitFP4    -0.326  0.482  0.483       
+## DASHDASHdit -0.250 -0.017  0.040  0.001</code></pre>
+<pre class="r"><code>summary(lmer(PC1 ~ visit +sodium+ (1|pptid), data=pca_clr_meta_changebaseline))</code></pre>
+<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
+## lmerModLmerTest]
+## Formula: PC1 ~ visit + sodium + (1 | pptid)
+##    Data: pca_clr_meta_changebaseline
+## 
+## REML criterion at convergence: 1746.2
+## 
+## Scaled residuals: 
+##      Min       1Q   Median       3Q      Max 
+## -3.15448 -0.51063 -0.02314  0.48056  2.84504 
+## 
+## Random effects:
+##  Groups   Name        Variance Std.Dev.
+##  pptid    (Intercept) 13.062   3.614   
+##  Residual              4.978   2.231   
+## Number of obs: 344, groups:  pptid, 94
+## 
+## Fixed effects:
+##                  Estimate Std. Error       df t value Pr(&gt;|t|)  
+## (Intercept)        0.1851     0.4567 163.9136   0.405   0.6857  
+## visitFP2          -0.3709     0.3327 248.0763  -1.115   0.2660  
+## visitFP3          -0.5170     0.3453 249.9206  -1.497   0.1357  
+## visitFP4          -0.5500     0.3504 250.1011  -1.570   0.1178  
+## sodiumlow sodium  -0.4568     0.2448 250.0046  -1.866   0.0632 .
+## ---
+## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
+## 
+## Correlation of Fixed Effects:
+##             (Intr) vstFP2 vstFP3 vstFP4
+## visitFP2    -0.364                     
+## visitFP3    -0.350  0.490              
+## visitFP4    -0.349  0.482  0.483       
+## sodiumlwsdm -0.254 -0.020 -0.027 -0.003</code></pre>
+<pre class="r"><code>summary(lmer(PC2 ~ visit +sodium+ (1|pptid), data=pca_clr_meta_changebaseline))</code></pre>
+<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
+## lmerModLmerTest]
+## Formula: PC2 ~ visit + sodium + (1 | pptid)
+##    Data: pca_clr_meta_changebaseline
+## 
+## REML criterion at convergence: 1787.4
+## 
+## Scaled residuals: 
+##     Min      1Q  Median      3Q     Max 
+## -4.2211 -0.5382  0.0358  0.4843  2.9079 
+## 
+## Random effects:
+##  Groups   Name        Variance Std.Dev.
+##  pptid    (Intercept) 9.209    3.035   
+##  Residual             6.516    2.553   
+## Number of obs: 344, groups:  pptid, 94
+## 
+## Fixed effects:
+##                  Estimate Std. Error       df t value Pr(&gt;|t|)
+## (Intercept)        0.5581     0.4346 210.6366   1.284    0.201
+## visitFP2          -0.1536     0.3804 248.1959  -0.404    0.687
+## visitFP3           0.1478     0.3944 251.0853   0.375    0.708
+## visitFP4           0.2391     0.4001 251.4078   0.598    0.551
+## sodiumlow sodium  -0.2964     0.2795 251.2073  -1.060    0.290
+## 
+## Correlation of Fixed Effects:
+##             (Intr) vstFP2 vstFP3 vstFP4
+## visitFP2    -0.438                     
+## visitFP3    -0.420  0.490              
+## visitFP4    -0.420  0.483  0.482       
+## sodiumlwsdm -0.306 -0.019 -0.027 -0.004</code></pre>
+<pre class="r"><code>summary(lmer(PC3 ~ visit +sodium+ (1|pptid), data=pca_clr_meta_changebaseline))</code></pre>
+<pre><code>## Linear mixed model fit by REML. t-tests use Satterthwaite&#39;s method [
+## lmerModLmerTest]
+## Formula: PC3 ~ visit + sodium + (1 | pptid)
+##    Data: pca_clr_meta_changebaseline
+## 
+## REML criterion at convergence: 1855.4
+## 
+## Scaled residuals: 
+##      Min       1Q   Median       3Q      Max 
+## -2.75383 -0.54302  0.00588  0.47198  2.68599 
+## 
+## Random effects:
+##  Groups   Name        Variance Std.Dev.
+##  pptid    (Intercept) 19.341   4.398   
+##  Residual              6.712   2.591   
+## Number of obs: 344, groups:  pptid, 94
+## 
+## Fixed effects:
+##                   Estimate Std. Error        df t value Pr(&gt;|t|)  
+## (Intercept)       -0.04321    0.54736 157.23487  -0.079   0.9372  
+## visitFP2           0.05351    0.38636 247.23353   0.139   0.8900  
+## visitFP3          -0.11417    0.40109 248.95533  -0.285   0.7761  
+## visitFP4          -0.83251    0.40694 249.12115  -2.046   0.0418 *
+## sodiumlow sodium   0.07915    0.28431 249.03442   0.278   0.7809  
+## ---
+## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
+## 
+## Correlation of Fixed Effects:
+##             (Intr) vstFP2 vstFP3 vstFP4
+## visitFP2    -0.353                     
+## visitFP3    -0.339  0.490              
+## visitFP4    -0.338  0.482  0.483       
+## sodiumlwsdm -0.247 -0.020 -0.027 -0.003</code></pre>
 <pre class="r"><code>## clr pca data export
 clr_pca_data_withpc &lt;-
-  merge(clr_pca_data,
-        cbind(pc1,pc2),
-        by=0) %&gt;%
-  rename(PC1 = pc1, PC2=pc2) %&gt;%
-  dplyr::select(subject, visit, DASH, sodium, diet, PC1, PC2) %&gt;%
-  melt(id.vars = c(&quot;subject&quot;, &quot;visit&quot;, &quot;DASH&quot;, &quot;sodium&quot;, &quot;diet&quot;)) %&gt;%
-  rename(PC = variable, pptid=subject)
+  pca_clr_meta_changebaseline %&gt;%
+  dplyr::select(pptid, visit, DASH, sodium, diet, PC1, PC2) %&gt;%
+  melt(id.vars = c(&quot;pptid&quot;, &quot;visit&quot;, &quot;DASH&quot;, &quot;sodium&quot;, &quot;diet&quot;)) %&gt;%
+  rename(PC = variable)
 
 
 write.table(clr_pca_data_withpc, 

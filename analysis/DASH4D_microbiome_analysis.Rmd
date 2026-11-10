@@ -101,8 +101,8 @@ MICROBIOME_ALPHA_DIVERSITY_LAB_DASH = "../data/alpha_diversity_lab_ana_data.tsv"
 alpha_diversity_diet_DASH <- read.table(MICROBIOME_ALPHA_DIVERSITY_LAB_DASH, header=T, sep="\t") %>%
   mutate(diet = factor(diet, levels=c("baseline", "CH","CL","DH","DL")),
          visit = factor(visit, levels=c("PRI", "FP1", "FP2", "FP3", "FP4")),
-         DASH = factor(DASH, c("baseline","DASH diet","Comparison diet")),
-         sodium = factor(sodium, c("baseline","low sodium","high sodium"))) %>%
+         DASH = factor(DASH, c("baseline","Comparison diet","DASH diet")),
+         sodium = factor(sodium, c("baseline","high sodium","low sodium"))) %>%
   arrange(pptid, visit)
 
 ```
@@ -590,7 +590,7 @@ write.table(ind_covariates_aitchison_comp_df,
 ```
 
 
-#### PCA on CLR-transformed change from baseline
+#### PCA on CLR-transformed data
 ```{r pca on clr-transformed change, include=T}
 
 set.seed(890122)
@@ -611,92 +611,14 @@ species_filtered_clean_included_impute_clr <-
             method="clr",
             pseudocount=0)[metadata_withbaseline$sample_id,]
 
-dist_mat_ratchison <- 
-  dist(species_filtered_clean_included_impute_clr)
-
-### Convert distance matrix to pairwise data
-dist_mat_ratchison_pair <-
-  melt(as.matrix(dist_mat_ratchison))[melt(upper.tri(as.matrix(dist_mat_ratchison)))$value,]%>%
-  filter(Var1 != Var2)
-
-dist_mat_ratchison_pair_meta <-
-  merge(
-    merge(dist_mat_ratchison_pair,
-          metadata_withbaseline %>% 
-            dplyr::select(sample_id, pptid, diet, visit,DASH,sodium),
-          by.x="Var1", by.y="sample_id", all.x=T),
-    metadata_withbaseline %>% 
-            dplyr::select(sample_id, pptid, diet, visit,DASH,sodium),
-    by.x="Var2", by.y="sample_id", all.x=T)
-
-### Within individual vs diet
-ind_diet_ratchison_comp <-
-  dist_mat_ratchison_pair_meta %>%
-  mutate(group = factor(case_when(pptid.x == pptid.y ~ 0,
-                                  diet.x == diet.y ~ 1),
-                        labels=c("Within-individual", "Within-diet"))
-         ) %>% filter(!is.na(group))
-
-dist_baseline_ratchison <-
-  dist_mat_ratchison_pair_meta %>% filter(pptid.x == pptid.y & visit.x == "PRI")
-
-rownames(metadata_withbaseline) <-
-  metadata_withbaseline$sample_id
+## run PCA on clr transformed values
+pca_clr <- prcomp(
+    species_filtered_clean_included_impute_clr,
+    center = TRUE,
+    scale. = FALSE
+)
 
 
-### CLR value change from baseline
-make_displacements <- function(Z, meta,
-                               subject   = "subject",
-                               treatment = "diet",
-                               visit     = "visit",
-                               baseline  = "PRI") {
-
-  stopifnot(identical(rownames(Z), rownames(meta)))
-  stopifnot(all(c(subject, visit) %in% colnames(meta)))
-  stopifnot(all(is.finite(Z)))
-
-  subj <- as.character(meta[[subject]])
-  trt <- as.character(meta[[treatment]])
-  vis  <- as.character(meta[[visit]])
-  stopifnot(baseline %in% vis)
-
-  # baseline row index per subject; NA if absent
-  base_idx <- match(subj, subj[vis == baseline])
-  base_row <- which(vis == baseline)[base_idx]
-
-  keep <- vis != baseline & !is.na(base_row)
-
-  V <- Z[keep, , drop = FALSE] - Z[base_row[keep], , drop = FALSE]
-
-  key <- data.frame(
-    sample_id = rownames(Z)[keep],
-    subject   = subj[keep],
-    visit     = vis[keep],
-    diet = trt[keep],
-    base_id   = rownames(Z)[base_row[keep]],
-    norm      = sqrt(rowSums(V^2)),
-    stringsAsFactors = FALSE
-  )
-  rownames(V) <- key$sample_id
-
-  # report what was dropped
-  lost <- setdiff(unique(subj), unique(subj[vis == baseline]))
-  if (length(lost))
-    warning(sprintf("%d subject(s) lacking a %s sample dropped: %s",
-                    length(lost), baseline, paste(lost, collapse = ", ")))
-
-  list(V = V, key = key)
-}
-
-
-out <- make_displacements(as.matrix(species_filtered_clean_included_impute_clr),
-                          metadata_withbaseline,
-                          subject = "pptid")
-
-out_mat <- out$V
-
-
-### Align pc signs
 align_pc_sign <- function(pca, X) {
   # drop zero-variance columns: scale() would return NaN
   X <- X[, apply(X, 2, sd, na.rm = TRUE) > 0, drop = FALSE]
@@ -718,39 +640,67 @@ align_pc_sign <- function(pca, X) {
   pca
 }
 
-pc <- prcomp(out_mat %>% t())
 
-pc <- align_pc_sign(pc, out_mat %>% t())  
+pca_clr <- align_pc_sign(pca_clr, species_filtered_clean_included_impute_clr) 
+
+pca_meta <- alpha_diversity_diet_DASH
+
+rownames(pca_meta) <- 
+  paste(alpha_diversity_diet_DASH$pptid,
+        alpha_diversity_diet_DASH$visit,
+        "Micro.Fe1", sep=".")
+
+pca_clr_meta <- merge(pca_meta,
+                      pca_clr$x[,1:3],by=0)
 
 
-pc1 <- pc$rotation[,1]
-pc2 <- pc$rotation[,2]
-pc3 <- pc$rotation[,3]
+((pca_clr$sdev)^2/sum((pca_clr$sdev)^2))[1:3]
 
-clr_pca_data <- (out$key) %>%
-  mutate(DASH = factor(ifelse(diet %in% c('DL','DH'), 1,0), labels=c("Comparison diet", "DASH4D diet")),
-         sodium = factor(ifelse(diet %in% c('DL','CL'), 1,0), labels=c("high sodium", "low sodium")))
+pca_clr_meta_baseline <- 
+  pca_clr_meta %>% filter(diet == "baseline") %>%
+  dplyr::select(c(pptid,PC1:PC3)) %>%
+  melt(id.vars=c("pptid"),
+       variable.name="metrics",
+       value.name="baseline") 
 
-((pc$sdev)^2/sum((pc$sdev)^2))[1:3]
+## end-of-diet-period CTF data with baseline
+### transform to long
+pca_clr_meta_withbaseline <- pca_clr_meta %>% 
+  filter(pptid %in% pca_clr_meta_baseline$pptid) %>% 
+  filter(diet != "baseline") %>%
+  dplyr::select(c(pptid,visit,diet,DASH,sodium,
+                  PC1:PC3)) %>%
+  melt(id.vars=c("pptid","visit","diet","DASH","sodium"),
+       variable.name="metrics",
+       value.name="measurements")
 
-summary(lmer(pc1 ~ visit +DASH+ (1|subject), data=clr_pca_data))
-summary(lmer(pc2 ~ visit +DASH+ (1|subject), data=clr_pca_data))
-summary(lmer(pc3 ~ visit +DASH+ (1|subject), data=clr_pca_data))
+## merge baseline with end-of-diet-period data
+## calculate change from baseline
+pca_clr_meta_changebaseline <- 
+  merge(pca_clr_meta_withbaseline,
+        pca_clr_meta_baseline,
+        by=c("pptid","metrics"), all.x=T) %>%
+  mutate(changefrombaseline = measurements-baseline) %>%
+  dcast(pptid+visit+diet+DASH +sodium ~ metrics,
+        value.var="changefrombaseline")
 
-summary(lmer(pc1 ~ visit +sodium+ (1|subject), data=clr_pca_data))
-summary(lmer(pc2 ~ visit +sodium+ (1|subject), data=clr_pca_data))
-summary(lmer(pc3 ~ visit +sodium+ (1|subject), data=clr_pca_data))
+
+
+summary(lmer(PC1 ~ visit +DASH+ (1|pptid), data=pca_clr_meta_changebaseline))
+summary(lmer(PC2 ~ visit +DASH+ (1|pptid), data=pca_clr_meta_changebaseline))
+summary(lmer(PC3 ~ visit +DASH+ (1|pptid), data=pca_clr_meta_changebaseline))
+
+summary(lmer(PC1 ~ visit +sodium+ (1|pptid), data=pca_clr_meta_changebaseline))
+summary(lmer(PC2 ~ visit +sodium+ (1|pptid), data=pca_clr_meta_changebaseline))
+summary(lmer(PC3 ~ visit +sodium+ (1|pptid), data=pca_clr_meta_changebaseline))
 
 
 ## clr pca data export
 clr_pca_data_withpc <-
-  merge(clr_pca_data,
-        cbind(pc1,pc2),
-        by=0) %>%
-  rename(PC1 = pc1, PC2=pc2) %>%
-  dplyr::select(subject, visit, DASH, sodium, diet, PC1, PC2) %>%
-  melt(id.vars = c("subject", "visit", "DASH", "sodium", "diet")) %>%
-  rename(PC = variable, pptid=subject)
+  pca_clr_meta_changebaseline %>%
+  dplyr::select(pptid, visit, DASH, sodium, diet, PC1, PC2) %>%
+  melt(id.vars = c("pptid", "visit", "DASH", "sodium", "diet")) %>%
+  rename(PC = variable)
 
 
 write.table(clr_pca_data_withpc, 
